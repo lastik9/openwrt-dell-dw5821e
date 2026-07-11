@@ -30,8 +30,11 @@ MBIM_DEV_DEFAULT="/dev/cdc-wdm0" # MBIM control device for the interface
 TGINFO="/usr/share/3ginfo-lite/3ginfo.sh"
 FEEDS="/etc/apk/repositories.d/customfeeds.list"
 KEYDIR="/etc/apk/keys"
-REPO_ADB="https://github.com/4IceG/Modem-extras-apk/raw/refs/heads/main/myapk/packages.adb"
-REPO_KEY="https://github.com/4IceG/Modem-extras-apk/raw/refs/heads/main/myapk/IceG-apkpub.pem"
+# Direct raw.githubusercontent.com URLs on purpose: the github.com/.../raw/...
+# form issues a redirect, which HTTP proxies (e.g. Clash/ssclash on :7890)
+# mishandle -> "HTTP error 400" / "unexpected end of file" during apk update.
+REPO_ADB="https://raw.githubusercontent.com/4IceG/Modem-extras-apk/main/myapk/packages.adb"
+REPO_KEY="https://raw.githubusercontent.com/4IceG/Modem-extras-apk/main/myapk/IceG-apkpub.pem"
 
 # --- Network interface settings --------------------------------------------
 CREATE_INTERFACE="yes"          # yes | no  -- create the MBIM interface
@@ -72,37 +75,70 @@ apk update
 apk add kmod-usb-net-cdc-mbim umbim luci-proto-mbim
 apk add sms-tool kmod-usb-serial kmod-usb-serial-option
 
-# --- 2. Add 4IceG apk repository (idempotent) ------------------------------
+# --- 2. Add 4IceG apk repository (idempotent, proxy-safe) ------------------
+# Order matters: install a VALID signing key first, add the feed line only if
+# the key is good, and roll the feed line back if apk update fails - otherwise
+# a broken feed left in customfeeds.list makes every later apk update fail.
 say "Step 2: adding 4IceG apk repository"
-if ! grep -qF "$REPO_ADB" "$FEEDS" 2>/dev/null; then
-    echo "$REPO_ADB" >> "$FEEDS"
-    echo "   repo line added"
-else
-    echo "   repo line already present, skipping"
-fi
 
 mkdir -p "$KEYDIR"
-if [ ! -s "$KEYDIR/IceG-apkpub.pem" ]; then
-    wget "$REPO_KEY" -O "$KEYDIR/IceG-apkpub.pem"
-    echo "   signing key installed"
+ICEG_KEY="$KEYDIR/IceG-apkpub.pem"
+
+# A leftover file doesn't prove the key is correct (a stale/foreign key gives
+# "UNTRUSTED signature"; behind a proxy the file may even be HTML) -> verify
+# the PEM header.
+key_ok() { [ -s "$1" ] && head -n1 "$1" | grep -q 'BEGIN PUBLIC KEY'; }
+
+if key_ok "$ICEG_KEY"; then
+    echo "   signing key present"
 else
-    echo "   signing key already present, skipping"
+    rm -f "$ICEG_KEY"
+    if wget -q "$REPO_KEY" -O "$ICEG_KEY" && key_ok "$ICEG_KEY"; then
+        echo "   signing key installed"
+    else
+        rm -f "$ICEG_KEY"
+        echo "!! не удалось скачать валидный ключ 4IceG — панели будут пропущены"
+        echo "!! (за прокси? попробуй: /etc/init.d/clash stop, затем перезапусти скрипт)"
+    fi
 fi
-apk update
+
+ICEG_OK=0
+if [ -s "$ICEG_KEY" ]; then
+    grep -qF "$REPO_ADB" "$FEEDS" 2>/dev/null || echo "$REPO_ADB" >> "$FEEDS"
+    if apk update; then
+        ICEG_OK=1
+    else
+        echo "!! apk update упал с фидом 4IceG — убираю строку обратно"
+        sed -i '\#4IceG/Modem-extras-apk#d' "$FEEDS" 2>/dev/null
+        apk update || true
+    fi
+else
+    sed -i '\#4IceG/Modem-extras-apk#d' "$FEEDS" 2>/dev/null
+    apk update || true
+fi
 
 # --- 3. Install the plugins ------------------------------------------------
-say "Step 3: installing 3ginfo-lite, sms-tool-js and modemband"
-apk add luci-app-3ginfo-lite
-apk add luci-app-sms-tool-js
-# modemband: GUI band-locking (drives AT^SLBAND under the hood on this modem).
-apk add luci-app-modemband
+# best-effort: with set -e active, an unreachable 4IceG feed (e.g. behind a
+# proxy) must NOT abort the whole run - the modem still comes up without panels.
+if [ "$ICEG_OK" = "1" ]; then
+    say "Step 3: installing 3ginfo-lite, sms-tool-js and modemband"
+    apk add luci-app-3ginfo-lite   || echo "   (3ginfo-lite skipped)"
+    apk add luci-app-sms-tool-js   || echo "   (sms-tool-js skipped)"
+    # modemband: GUI band-locking (drives AT^SLBAND under the hood on this modem).
+    apk add luci-app-modemband     || echo "   (modemband skipped)"
 
-if [ "$INSTALL_RU" = "yes" ]; then
-    say "Step 3: installing Russian translations"
-    # Installed best-effort: a missing -ru package can't abort the run.
-    apk add luci-i18n-3ginfo-lite-ru  || echo "   (3ginfo RU not in feed, skipping)"
-    apk add luci-i18n-sms-tool-js-ru  || echo "   (sms-tool-js RU not in feed, skipping)"
-    apk add luci-i18n-modemband-ru    || echo "   (modemband RU not in feed, skipping)"
+    if [ "$INSTALL_RU" = "yes" ]; then
+        say "Step 3: installing Russian translations"
+        apk add luci-i18n-3ginfo-lite-ru  || echo "   (3ginfo RU not in feed, skipping)"
+        apk add luci-i18n-sms-tool-js-ru  || echo "   (sms-tool-js RU not in feed, skipping)"
+        apk add luci-i18n-modemband-ru    || echo "   (modemband RU not in feed, skipping)"
+    fi
+else
+    say "Step 3: SKIPPING 4IceG panels — repo unavailable"
+    echo "!! Панели 4IceG не установлены (фид недоступен, см. Step 2)."
+    echo "!! Модем поднимется, но без веб-панелей 3ginfo/sms/modemband."
+    echo "!! Частая причина — HTTP-прокси на роутере (Clash/ssclash на :7890)."
+    echo "!! Лечение: /etc/init.d/clash stop; sh install-dw5821e.sh; /etc/init.d/clash start"
 fi
 
 # --- 4. Detect MBIM device + set the AT port -------------------------------
@@ -122,9 +158,15 @@ if ! [ -c "$MBIM_DEV" ]; then
 fi
 
 # 3ginfo-lite: AT port + bind to the LTE interface (instead of wan).
-uci set 3ginfo.@3ginfo[0].device="$AT_PORT"
-[ "$CREATE_INTERFACE" = "yes" ] && uci set 3ginfo.@3ginfo[0].network="$IFACE_NAME"
-uci commit 3ginfo
+# Guarded on the config file: if the panel wasn't installed (feed unavailable),
+# there's nothing to configure and this must not abort the run under set -e.
+if [ -f /etc/config/3ginfo ]; then
+    uci set 3ginfo.@3ginfo[0].device="$AT_PORT"
+    [ "$CREATE_INTERFACE" = "yes" ] && uci set 3ginfo.@3ginfo[0].network="$IFACE_NAME"
+    uci commit 3ginfo
+else
+    echo "   (3ginfo not installed, skipping its config)"
+fi
 
 # --- 5. Create the MBIM network interface ----------------------------------
 # Builds a ready-to-use interface: proto=mbim, the MBIM control device,

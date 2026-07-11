@@ -41,7 +41,7 @@ DW5821e — это M.2-модем на чипе Qualcomm Snapdragon X20 LTE (Cat
 Команды выполняются **на роутере** (по SSH):
 
 ```sh
-wget https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/install-dw5821e.sh
+wget -O install-dw5821e.sh https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/install-dw5821e.sh
 sh install-dw5821e.sh
 ```
 
@@ -52,7 +52,7 @@ sh install-dw5821e.sh
 ### Удаление
 
 ```sh
-wget https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/uninstall-dw5821e.sh
+wget -O uninstall-dw5821e.sh https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/uninstall-dw5821e.sh
 sh uninstall-dw5821e.sh
 ```
 
@@ -63,6 +63,17 @@ sh uninstall-dw5821e.sh
 - **Красный баннер `Bad control character in string literal in JSON`** — главная болячка этого модема. AT-ответы Qualcomm приходят с `\r` (CRLF), символ просачивается в JSON и ломает разбор в LuCI. Скрипт лечит это автоматически (шаг 8), добавляя `| tr -d '\r\n'` в функцию `sanitize_number()` в `3ginfo.sh`. При обновлении плагина фикс нужно накатить заново — скрипт сохраняет рабочую копию в `/root/3ginfo.sh.fixed`. Подробности: [issue #121](https://github.com/4IceG/luci-app-3ginfo-lite/issues/121).
 - **`Carrier: Absent` после установки** — почти всегда неверный **APN**. Он зависит от оператора: скрипт по умолчанию ставит `internet`, но у части тарифов он другой. Исправь APN в интерфейсе и `Save & Apply`.
 - **3ginfo не показывает данные** — проверь AT-порт. У DW5821e рабочий порт `/dev/ttyUSB1` (не ttyUSB2 — там GPS). Команда проверки: `sms_tool -d /dev/ttyUSB1 at ATI`.
+- **Панели 4IceG не установились, `apk update` ругается `error 8` / `unexpected end of file` / `UNTRUSTED signature`** — почти всегда виноват HTTP-прокси на роутере (Clash / ssclash на `127.0.0.1:7890`): он не переваривает редирект GitHub при загрузке фида. Лечение — временно остановить прокси на время установки:
+  ```sh
+  /etc/init.d/clash stop
+  sh install-dw5821e.sh
+  /etc/init.d/clash start
+  ```
+  Если строка фида «залипла» и ломает `apk update`, убери её вручную:
+  ```sh
+  sed -i '\#4IceG/Modem-extras-apk#d' /etc/apk/repositories.d/customfeeds.list && apk update
+  ```
+- **`wget` сохранил файл как `index.html`** — за прокси busybox-`wget` теряет имя из URL. Всегда качай с явным именем: `wget -O install-dw5821e.sh <URL>` (в командах выше это уже учтено).
 - **Не приходят входящие SMS** — в MBIM-режиме Qualcomm-модем не сохраняет настройки маршрутизации SMS между перезагрузками: после ребута сбрасываются `CPMS`/`CNMI`, и входящие не доходят до sms-tool (отправка при этом работает). Скрипт ставит init-скрипт `/etc/init.d/dw5821e-sms`, который при загрузке дожидается порта и заново задаёт `AT+CPMS="SM","SM","SM"` + `AT+CNMI=2,1,0,0,0`. Если приём всё же не работает — проверь `AT+CNMI?` (должно быть `2,1,0,0,0`) и `AT+CEREG?` (второй параметр `1` = зарегистрирован).
 - **Долгая регистрация после отключения питания** — после полного обесточивания (power-cycle) модем делает холодный поиск сети, и регистрация в LTE + подъём интернета занимают до пары минут (дольше, чем после обычного `reboot`). Это нормальное поведение модема; SMS тоже начинают приходить после завершения регистрации, не сразу.
 - **Лок бэндов** через modemband или `AT^SLBAND` — осторожно: если залочить бэнд, которого нет в твоей точке, модем не зарегистрируется. Проверка текущей лочки: `AT^SLBAND?`; сброс: `AT^SLBAND`. На прошивках Foxconn смена бэндов вступает в силу **только после перезагрузки** модема. На части прошивок проприетарные AT-команды могут возвращать ошибку — тогда управление бэндами недоступно.

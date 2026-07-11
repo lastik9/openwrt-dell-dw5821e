@@ -26,7 +26,7 @@ FW_ZONE="wan"
 TGINFO="/usr/share/3ginfo-lite/3ginfo.sh"
 FEEDS="/etc/apk/repositories.d/customfeeds.list"
 KEY="/etc/apk/keys/IceG-apkpub.pem"
-REPO_ADB="https://github.com/4IceG/Modem-extras-apk/raw/refs/heads/main/myapk/packages.adb"
+REPO_ADB="https://raw.githubusercontent.com/4IceG/Modem-extras-apk/main/myapk/packages.adb"
 
 # --- What to remove --------------------------------------------------------
 REMOVE_DRIVERS="no"     # yes -> also remove MBIM/serial drivers + sms-tool
@@ -100,9 +100,12 @@ fi
 # --- 5. Remove the 4IceG apk repository + key ------------------------------
 if [ "$REMOVE_REPO" = "yes" ]; then
     say "Step 5: removing 4IceG apk repository"
-    if [ -f "$FEEDS" ] && grep -qF "$REPO_ADB" "$FEEDS" 2>/dev/null; then
-        # Delete only the 4IceG line, keep the rest of customfeeds intact.
-        grep -vF "$REPO_ADB" "$FEEDS" > "${FEEDS}.tmp" && mv "${FEEDS}.tmp" "$FEEDS"
+    # Match by substring, NOT by exact line: the feed URL has changed over
+    # versions (github.com/.../raw redirect -> direct raw.githubusercontent.com).
+    # An exact grep -vF against one URL would leave the other form stranded in
+    # customfeeds.list, breaking every later apk update. The substring covers both.
+    if [ -f "$FEEDS" ] && grep -q '4IceG/Modem-extras-apk' "$FEEDS" 2>/dev/null; then
+        sed -i '\#4IceG/Modem-extras-apk#d' "$FEEDS"
         echo "   removed repo line from $FEEDS"
     else
         echo "   repo line not present, skipping"

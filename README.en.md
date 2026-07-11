@@ -41,7 +41,7 @@ The DW5821e is an M.2 modem based on the Qualcomm Snapdragon X20 LTE (Cat16). It
 Run **on the router** (over SSH):
 
 ```sh
-wget https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/install-dw5821e.sh
+wget -O install-dw5821e.sh https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/install-dw5821e.sh
 sh install-dw5821e.sh
 ```
 
@@ -52,7 +52,7 @@ Settings are exposed as variables at the top of the script: interface name, fire
 ### Uninstall
 
 ```sh
-wget https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/uninstall-dw5821e.sh
+wget -O uninstall-dw5821e.sh https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/uninstall-dw5821e.sh
 sh uninstall-dw5821e.sh
 ```
 
@@ -63,6 +63,17 @@ The uninstaller removes the interface and its firewall entry, deletes the packag
 - **Red `Bad control character in string literal in JSON` banner** — the main quirk of this modem. Qualcomm AT responses use CRLF, and a stray `\r` leaks into the JSON and breaks parsing in LuCI. The script fixes this automatically (step 8) by appending `| tr -d '\r\n'` to `sanitize_number()` in `3ginfo.sh`. After a plugin upgrade the fix must be re-applied — the script saves a working copy at `/root/3ginfo.sh.fixed`. Details: [issue #121](https://github.com/4IceG/luci-app-3ginfo-lite/issues/121).
 - **`Carrier: Absent` after install** — almost always the wrong **APN**. It depends on the carrier: the script defaults to `internet`, but some plans differ. Fix the APN on the interface and `Save & Apply`.
 - **3ginfo shows no data** — check the AT port. On the DW5821e the working port is `/dev/ttyUSB1` (not ttyUSB2 — that's GPS). Check with: `sms_tool -d /dev/ttyUSB1 at ATI`.
+- **4IceG panels didn't install, `apk update` complains `error 8` / `unexpected end of file` / `UNTRUSTED signature`** — almost always an HTTP proxy on the router (Clash / ssclash on `127.0.0.1:7890`) that mishandles GitHub's redirect while fetching the feed. Fix: stop the proxy for the install:
+  ```sh
+  /etc/init.d/clash stop
+  sh install-dw5821e.sh
+  /etc/init.d/clash start
+  ```
+  If the feed line got stranded and breaks `apk update`, remove it manually:
+  ```sh
+  sed -i '\#4IceG/Modem-extras-apk#d' /etc/apk/repositories.d/customfeeds.list && apk update
+  ```
+- **`wget` saved the file as `index.html`** — behind a proxy busybox `wget` loses the name from the URL. Always download with an explicit name: `wget -O install-dw5821e.sh <URL>` (already done in the commands above).
 - **Incoming SMS don't arrive** — in MBIM mode the Qualcomm modem doesn't persist SMS routing across reboots: `CPMS`/`CNMI` reset after a restart and incoming SMS never reach sms-tool (sending still works). The script installs `/etc/init.d/dw5821e-sms`, which waits for the port on boot and re-applies `AT+CPMS="SM","SM","SM"` + `AT+CNMI=2,1,0,0,0`. If reception still fails, check `AT+CNMI?` (should be `2,1,0,0,0`) and `AT+CEREG?` (second field `1` = registered).
 - **Slow registration after a power-cycle** — after a full power-off the modem does a cold network scan, so LTE registration and internet can take up to a couple of minutes (longer than after a plain `reboot`). This is normal modem behaviour; SMS also start arriving once registration completes, not immediately.
 - **Band locking** via modemband or `AT^SLBAND` — be careful: locking to a band that isn't present at your location will leave the modem unregistered. Check the current lock: `AT^SLBAND?`; reset: `AT^SLBAND`. On Foxconn firmware a band change takes effect **only after a modem reboot**. On some firmware the proprietary AT commands may return an error, in which case band control is unavailable.

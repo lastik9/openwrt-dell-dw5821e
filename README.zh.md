@@ -41,7 +41,7 @@ DW5821e 是基于高通骁龙 X20 LTE（Cat16）的 M.2 调制解调器。它通
 在**路由器上**运行（通过 SSH）：
 
 ```sh
-wget https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/install-dw5821e.sh
+wget -O install-dw5821e.sh https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/install-dw5821e.sh
 sh install-dw5821e.sh
 ```
 
@@ -52,7 +52,7 @@ sh install-dw5821e.sh
 ### 卸载
 
 ```sh
-wget https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/uninstall-dw5821e.sh
+wget -O uninstall-dw5821e.sh https://raw.githubusercontent.com/lastik9/openwrt-dell-dw5821e/main/uninstall-dw5821e.sh
 sh uninstall-dw5821e.sh
 ```
 
@@ -63,6 +63,17 @@ sh uninstall-dw5821e.sh
 - **红色横幅 `Bad control character in string literal in JSON`** —— 该调制解调器的主要问题。高通 AT 响应使用 CRLF，杂散的 `\r` 会漏入 JSON 并破坏 LuCI 的解析。脚本会自动修复（步骤 8），在 `3ginfo.sh` 的 `sanitize_number()` 函数后追加 `| tr -d '\r\n'`。插件升级后需重新应用修复 —— 脚本会在 `/root/3ginfo.sh.fixed` 保存工作副本。详情：[issue #121](https://github.com/4IceG/luci-app-3ginfo-lite/issues/121)。
 - **安装后 `Carrier: Absent`** —— 几乎都是 **APN** 错误。它取决于运营商：脚本默认使用 `internet`，但部分套餐不同。在接口上修正 APN 并 `Save & Apply`。
 - **3ginfo 不显示数据** —— 检查 AT 端口。DW5821e 的工作端口是 `/dev/ttyUSB1`（不是 ttyUSB2 —— 那是 GPS）。检查命令：`sms_tool -d /dev/ttyUSB1 at ATI`。
+- **4IceG 面板未安装，`apk update` 报 `error 8` / `unexpected end of file` / `UNTRUSTED signature`** —— 几乎都是路由器上的 HTTP 代理（Clash / ssclash，`127.0.0.1:7890`）在获取软件源时无法正确处理 GitHub 的重定向。解决方法：安装期间临时停止代理：
+  ```sh
+  /etc/init.d/clash stop
+  sh install-dw5821e.sh
+  /etc/init.d/clash start
+  ```
+  若软件源行残留并导致 `apk update` 失败，手动删除：
+  ```sh
+  sed -i '\#4IceG/Modem-extras-apk#d' /etc/apk/repositories.d/customfeeds.list && apk update
+  ```
+- **`wget` 把文件保存成了 `index.html`** —— 在代理后面 busybox 的 `wget` 会丢失 URL 中的文件名。始终用显式文件名下载：`wget -O install-dw5821e.sh <URL>`（上面的命令已经这样做了）。
 - **收不到来信短信** —— 在 MBIM 模式下，高通调制解调器不会在重启后保留短信路由设置：重启后 `CPMS`/`CNMI` 被重置，来信无法到达 sms-tool（发送仍然正常）。脚本会安装 `/etc/init.d/dw5821e-sms`，开机时等待端口就绪并重新设置 `AT+CPMS="SM","SM","SM"` + `AT+CNMI=2,1,0,0,0`。若接收仍然失败，检查 `AT+CNMI?`（应为 `2,1,0,0,0`）和 `AT+CEREG?`（第二个字段为 `1` 表示已注册）。
 - **断电后注册较慢** —— 完全断电（power-cycle）后，调制解调器会进行冷启动网络搜索，因此 LTE 注册和联网可能需要一两分钟（比普通 `reboot` 更久）。这是调制解调器的正常行为；短信也会在注册完成后才开始到达，而非立即。
 - **锁频**（通过 modemband 或 `AT^SLBAND`）—— 请谨慎：锁定到你所在位置不存在的频段会导致调制解调器无法注册。查看当前锁定：`AT^SLBAND?`；重置：`AT^SLBAND`。在 Foxconn 固件上，频段更改**仅在调制解调器重启后**生效。部分固件的私有 AT 命令可能返回错误，此时无法控制频段。
